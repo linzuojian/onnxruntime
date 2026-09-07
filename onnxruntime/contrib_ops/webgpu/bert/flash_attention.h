@@ -256,7 +256,8 @@ class FlashAttentionDecodeQKVProgram final : public Program<FlashAttentionDecode
                                           {"attn_bias_dim0", ProgramUniformVariableDataType::Uint32},
                                           {"attn_bias_dim1", ProgramUniformVariableDataType::Uint32},
                                           {"attn_bias_dim3", ProgramUniformVariableDataType::Uint32},
-                                          {"new_sequence_length", ProgramUniformVariableDataType::Uint32});
+                                          {"new_sequence_length", ProgramUniformVariableDataType::Uint32},
+                                          {"local_window_size", ProgramUniformVariableDataType::Uint32});
 
  private:
   bool has_attention_bias_;
@@ -376,7 +377,8 @@ Status ApplyFlashAttention(const Tensor* Q, const Tensor* K, const Tensor* V, co
                            const Tensor* cos_cache = nullptr, const Tensor* sin_cache = nullptr, const Tensor* head_sink = nullptr,
                            const Tensor* total_seqlen = nullptr, const Tensor* seqlens_q = nullptr,
                            const Tensor* block_table = nullptr, uint32_t block_size = 0, uint32_t max_num_blocks_per_seq = 0,
-                           const Tensor* cumulative_seqlens_q = nullptr);
+                           const Tensor* cumulative_seqlens_q = nullptr,
+                           int local_window_size = -1);
 
 // Adapter/config gate for the fused paged-prefill shader
 // (FlashAttentionPagedPrefillProgram). Callers that decide up front whether Q

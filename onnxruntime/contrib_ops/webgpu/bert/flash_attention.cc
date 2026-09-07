@@ -488,7 +488,7 @@ Status ComputeFlashAttentionDecodeQKV(onnxruntime::webgpu::ComputeContext& conte
                                       Tensor* metadata, const Tensor* seqlen_k,
                                       const WebgpuAttentionParameters& parameters, const Tensor* indirect_buffer, uint32_t num_total_seq_length_tile, uint32_t num_present_sequence_length_tile, uint32_t tile_size, bool use_indirect_dispatch, uint32_t present_sequence_length, uint32_t m_tile, bool use_seqlen_k, const Tensor* total_seqlen,
                                       bool turbo_quant, int compressed_head_size_u32,
-                                      bool use_seqlens_q, const Tensor* seqlens_q) {
+                                      bool use_seqlens_q, const Tensor* seqlens_q, int local_window_size) {
   const float alpha = parameters.scale_ == 0.0f ? 1.f / sqrt(static_cast<float>(parameters.head_size_))
                                                 : parameters.scale_;
 
@@ -554,7 +554,8 @@ Status ComputeFlashAttentionDecodeQKV(onnxruntime::webgpu::ComputeContext& conte
                             {attn_bias_dim0},
                             {attn_bias_dim1},
                             {attn_bias_dim3},
-                            {static_cast<uint32_t>(parameters.sequence_length_)}});
+                            {static_cast<uint32_t>(parameters.sequence_length_)},
+                            {static_cast<uint32_t>(std::max(local_window_size, 0))}});
 
   return context.RunProgram(program);
 }
@@ -769,7 +770,7 @@ Status ApplyFlashAttention(const Tensor* Q, const Tensor* K, const Tensor* V, co
                            const Tensor* cos_cache, const Tensor* sin_cache, const Tensor* head_sink,
                            const Tensor* total_seqlen, const Tensor* seqlens_q,
                            const Tensor* block_table, uint32_t block_size, uint32_t max_num_blocks_per_seq,
-                           const Tensor* cumulative_seqlens_q) {
+                           const Tensor* cumulative_seqlens_q, int local_window_size) {
   constexpr uint32_t tile_size = 64;
   const bool use_seqlens_q = seqlens_q != nullptr;
   const bool use_paged_kv_cache = block_table != nullptr;
@@ -1203,7 +1204,7 @@ Status ApplyFlashAttention(const Tensor* Q, const Tensor* K, const Tensor* V, co
                                                          num_present_sequence_length_tile, tile_size, use_indirect_dispatch,
                                                          present_sequence_length, m_tile, use_seqlen_k, total_seqlen,
                                                          turbo_quant_enabled, compressed_head_size_u32,
-                                                         use_seqlens_q, seqlens_q));
+                                                         use_seqlens_q, seqlens_q, local_window_size));
 
       ORT_RETURN_IF_ERROR(ComputeFlashAttentionDecodeVxReduce(context, &out_split_vx, &metadata, attn_output, seqlen_k, parameters,
                                                               num_total_seq_length_tile,
