@@ -3889,6 +3889,18 @@ static void RunIndirectDispatchGraphCapture(bool do_rotary,
   RunOptions run_options;
   ORT_THROW_IF_ERROR(session.Run(run_options, *io_binding));
   auto first_output = read_output();
+  if (local_window_size != -1) {
+    auto poisoned_key = past_key_data;
+    auto poisoned_value = past_value_data;
+    const size_t batch_offset = kv_num_heads * cache_sequence_length * cache_head_size;
+    const size_t excluded_tile_size = 64 * kv_num_heads * cache_head_size;
+    std::fill_n(poisoned_key.begin() + batch_offset, excluded_tile_size, 100.0f);
+    std::fill_n(poisoned_value.begin() + batch_offset, excluded_tile_size, 100.0f);
+    update_gpu_value(past_key_value, poisoned_key.data(), DataTypeImpl::GetType<float>(), cache_shape);
+    update_gpu_value(past_value_value, poisoned_value.data(), DataTypeImpl::GetType<float>(), cache_shape);
+    ORT_THROW_IF_ERROR(session.Run(run_options, *io_binding));
+    EXPECT_EQ(first_output, read_output()) << "KV entries outside the local window affected replay";
+  }
 
   // Batch 0 has only two logical tokens in a four-token input. TurboQuant static-cache
   // slots for its two padded tokens must retain their original contents. The standard
