@@ -3680,7 +3680,9 @@ static void RunIndirectDispatchGraphCapture(bool do_rotary,
                                             bool enable_turbo_quant,
                                             bool enable_multi_rotary_cache,
                                             int sequence_length = 4,
-                                            int local_window_size = -1) {
+                                            int local_window_size = -1,
+                                            bool enable_graph_capture = true,
+                                            std::vector<float>* replay_output = nullptr) {
   constexpr int batch_size = 2;
   constexpr int short_total_sequence_length = 2;
   constexpr int cache_sequence_length = 130;  // Three 64-token attention tiles.
@@ -3750,7 +3752,7 @@ static void RunIndirectDispatchGraphCapture(bool do_rotary,
   SessionOptions session_options;
   InferenceSession session{session_options, GetEnvironment()};
   auto webgpu_ep = WebGpuEPForGqaOptions(
-      /*enable_graph_capture=*/true,
+      enable_graph_capture,
       enable_turbo_quant,
       enable_multi_rotary_cache ? multi_rotary_cache_concat_offset : 0);
   if (!webgpu_ep) {
@@ -3840,9 +3842,16 @@ static void RunIndirectDispatchGraphCapture(bool do_rotary,
   std::vector<int32_t> seqlens_data{short_total_sequence_length - 1, cache_sequence_length - 1};
   auto seqlens_value = make_gpu_value(seqlens_data.data(), DataTypeImpl::GetType<int32_t>(), seqlens_shape);
   std::vector<int32_t> total_sequence_length_data{cache_sequence_length};
-  auto total_sequence_length_value = make_gpu_value(total_sequence_length_data.data(),
-                                                    DataTypeImpl::GetType<int32_t>(),
-                                                    total_sequence_length_shape);
+  OrtValue total_sequence_length_value;
+  if (enable_graph_capture) {
+    total_sequence_length_value = make_gpu_value(total_sequence_length_data.data(),
+                                                 DataTypeImpl::GetType<int32_t>(),
+                                                 total_sequence_length_shape);
+  } else {
+    Tensor::InitOrtValue(DataTypeImpl::GetType<int32_t>(), total_sequence_length_shape,
+                         total_sequence_length_data.data(), cpu_allocator->Info(),
+                         total_sequence_length_value);
+  }
   auto cos_cache_value = make_gpu_value(cos_cache_data.data(), DataTypeImpl::GetType<float>(), rotary_cache_shape);
   auto sin_cache_value = make_gpu_value(sin_cache_data.data(), DataTypeImpl::GetType<float>(), rotary_cache_shape);
 
@@ -3889,18 +3898,6 @@ static void RunIndirectDispatchGraphCapture(bool do_rotary,
   RunOptions run_options;
   ORT_THROW_IF_ERROR(session.Run(run_options, *io_binding));
   auto first_output = read_output();
-  if (local_window_size != -1) {
-    auto poisoned_key = past_key_data;
-    auto poisoned_value = past_value_data;
-    const size_t batch_offset = kv_num_heads * cache_sequence_length * cache_head_size;
-    const size_t excluded_tile_size = 64 * kv_num_heads * cache_head_size;
-    std::fill_n(poisoned_key.begin() + batch_offset, excluded_tile_size, 100.0f);
-    std::fill_n(poisoned_value.begin() + batch_offset, excluded_tile_size, 100.0f);
-    update_gpu_value(past_key_value, poisoned_key.data(), DataTypeImpl::GetType<float>(), cache_shape);
-    update_gpu_value(past_value_value, poisoned_value.data(), DataTypeImpl::GetType<float>(), cache_shape);
-    ORT_THROW_IF_ERROR(session.Run(run_options, *io_binding));
-    EXPECT_EQ(first_output, read_output()) << "KV entries outside the local window affected replay";
-  }
 
   // Batch 0 has only two logical tokens in a four-token input. TurboQuant static-cache
   // slots for its two padded tokens must retain their original contents. The standard
@@ -3934,6 +3931,9 @@ static void RunIndirectDispatchGraphCapture(bool do_rotary,
   update_gpu_value(seqlens_value, seqlens_data.data(), DataTypeImpl::GetType<int32_t>(), seqlens_shape);
   ORT_THROW_IF_ERROR(session.Run(run_options, *io_binding));
   auto second_output = read_output();
+  if (replay_output != nullptr) {
+    *replay_output = second_output;
+  }
 
   ASSERT_EQ(first_output.size(), second_output.size());
   EXPECT_TRUE(std::all_of(first_output.begin(), first_output.end(),
@@ -3978,11 +3978,24 @@ TEST(GroupQueryAttentionTest, WebGPU_TurboQuant_IndirectDispatch_MultiRotaryCach
 }
 
 TEST(GroupQueryAttentionTest, WebGPU_GraphCapture_PackedRotaryCrossesLocalWindowBoundary) {
+  std::vector<float> captured_output;
+  std::vector<float> eager_output;
   RunIndirectDispatchGraphCapture(/*do_rotary=*/true,
                                   /*enable_turbo_quant=*/false,
                                   /*enable_multi_rotary_cache=*/false,
                                   /*sequence_length=*/1,
-                                  /*local_window_size=*/64);
+                                  /*local_window_size=*/64,
+                                  /*enable_graph_capture=*/true,
+                                  &captured_output);
+  RunIndirectDispatchGraphCapture(/*do_rotary=*/true,
+                                  /*enable_turbo_quant=*/false,
+                                  /*enable_multi_rotary_cache=*/false,
+                                  /*sequence_length=*/1,
+                                  /*local_window_size=*/64,
+                                  /*enable_graph_capture=*/false,
+                                  &eager_output);
+  ExpectOutputsMatch(captured_output, eager_output, 2e-3f,
+                     "WebGPU_GraphCapture_PackedRotaryCrossesLocalWindowBoundary");
 }
 
 // The non-static packed-QKV path uses split_packed_qkv_with_rotary_embedding.
