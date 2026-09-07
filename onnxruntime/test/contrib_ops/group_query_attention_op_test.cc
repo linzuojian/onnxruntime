@@ -3843,6 +3843,8 @@ static void RunIndirectDispatchGraphCapture(bool do_rotary,
   auto seqlens_value = make_gpu_value(seqlens_data.data(), DataTypeImpl::GetType<int32_t>(), seqlens_shape);
   std::vector<int32_t> total_sequence_length_data{cache_sequence_length};
   OrtValue total_sequence_length_value;
+  // Captured GQA reads this value on the GPU during replay. Eager GQA registers the
+  // same input as CPU memory, so each session uses the placement required by its kernel.
   if (enable_graph_capture) {
     total_sequence_length_value = make_gpu_value(total_sequence_length_data.data(),
                                                  DataTypeImpl::GetType<int32_t>(),
@@ -3896,6 +3898,9 @@ static void RunIndirectDispatchGraphCapture(bool do_rotary,
   };
 
   RunOptions run_options;
+  // The first run records the graph with batch 0 below the local-window boundary and
+  // batch 1 above it. The second run swaps their data and GPU-resident logical lengths,
+  // forcing replay to apply the window dynamically instead of reusing a captured decision.
   ORT_THROW_IF_ERROR(session.Run(run_options, *io_binding));
   auto first_output = read_output();
 
@@ -3978,6 +3983,8 @@ TEST(GroupQueryAttentionTest, WebGPU_TurboQuant_IndirectDispatch_MultiRotaryCach
 }
 
 TEST(GroupQueryAttentionTest, WebGPU_GraphCapture_PackedRotaryCrossesLocalWindowBoundary) {
+  // Use eager WebGPU as the oracle so the provider, inputs, and floating-point behavior
+  // remain identical; graph capture/replay is the only variable under test.
   std::vector<float> captured_output;
   std::vector<float> eager_output;
   RunIndirectDispatchGraphCapture(/*do_rotary=*/true,
