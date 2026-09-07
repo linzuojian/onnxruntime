@@ -3678,9 +3678,10 @@ static std::unique_ptr<IExecutionProvider> WebGpuEPWithTurboQuant4(bool enable_g
 // covering the right-padding underflow clamp with true static-cache aliasing.
 static void RunIndirectDispatchGraphCapture(bool do_rotary,
                                             bool enable_turbo_quant,
-                                            bool enable_multi_rotary_cache) {
+                                            bool enable_multi_rotary_cache,
+                                            int local_window_size = -1,
+                                            int sequence_length = 4) {
   constexpr int batch_size = 2;
-  constexpr int sequence_length = 4;
   constexpr int short_total_sequence_length = 2;
   constexpr int cache_sequence_length = 130;  // Three 64-token attention tiles.
   constexpr int num_heads = 2;
@@ -3736,6 +3737,9 @@ static void RunIndirectDispatchGraphCapture(bool do_rotary,
     node.AddAttribute("kv_num_heads", static_cast<int64_t>(kv_num_heads));
     if (do_rotary) {
       node.AddAttribute("do_rotary", int64_t{1});
+    }
+    if (local_window_size != -1) {
+      node.AddAttribute("local_window_size", static_cast<int64_t>(local_window_size));
     }
     ORT_THROW_IF_ERROR(graph.Resolve());
   }
@@ -3926,7 +3930,7 @@ static void RunIndirectDispatchGraphCapture(bool do_rotary,
   EXPECT_TRUE(std::all_of(second_output.begin(), second_output.end(),
                           [](float value) { return std::isfinite(value); }))
       << "second graph-capture output contains a non-finite value";
-  constexpr size_t output_elements_per_batch = sequence_length * hidden_size;
+  const size_t output_elements_per_batch = static_cast<size_t>(sequence_length) * hidden_size;
   for (int second_batch = 0; second_batch < batch_size; ++second_batch) {
     const int first_batch = batch_size - 1 - second_batch;
     const auto* second_begin = second_output.data() + second_batch * output_elements_per_batch;
@@ -3959,6 +3963,14 @@ TEST(GroupQueryAttentionTest, WebGPU_TurboQuant_IndirectDispatch_MultiRotaryCach
   RunIndirectDispatchGraphCapture(/*do_rotary=*/true,
                                   /*enable_turbo_quant=*/true,
                                   /*enable_multi_rotary_cache=*/true);
+}
+
+TEST(GroupQueryAttentionTest, WebGPU_GraphCapture_PackedRotaryCrossesLocalWindowBoundary) {
+  RunIndirectDispatchGraphCapture(/*do_rotary=*/true,
+                                  /*enable_turbo_quant=*/false,
+                                  /*enable_multi_rotary_cache=*/false,
+                                  /*local_window_size=*/64,
+                                  /*sequence_length=*/1);
 }
 
 TEST(GroupQueryAttentionTest, WebGPU_GraphCapture_ReplayCrossesLocalWindowBoundary) {
